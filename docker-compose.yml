@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: mugon-hr-bot
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - mugon-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: mugon-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    networks:
+      - mugon-net
+
+volumes:
+  redis_data:
+
+networks:
+  mugon-net:
+    driver: bridge
