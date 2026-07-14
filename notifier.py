@@ -22,7 +22,7 @@ async def notify_ceo_pm(
     tg_id = candidate_data.get("tg_id", "")
     lead_id = candidate_data.get("lead_id", "")
 
-    score = ai_resume.get("total_score", 0)
+    score = ai_resume.get("total_score")
     verdict = ai_resume.get("verdict", "—")
     next_step = ai_resume.get("next_step", "—")
     project_fit = ai_resume.get("project_fit", "—")
@@ -34,15 +34,19 @@ async def notify_ceo_pm(
     deliv = ai_resume.get("delivery_score", "—")
     comm = ai_resume.get("communication_score", "—")
 
-    score_emoji = "🟢" if score >= 75 else "🟡" if score >= 50 else "🔴"
+    score_emoji = "⚪"
+    score_display = "не выставлен"
+    if isinstance(score, (int, float)):
+        score_emoji = "🟢" if score >= 75 else "🟡" if score >= 50 else "🔴"
+        score_display = f"{score}/100"
 
     report = (
-        f"🆕 *НОВЫЙ КАНДИДАТ — MUGON.CLUB*\n\n"
+        f"🆕 *ПРОФИЛЬ НА ПРОВЕРКУ — MUGON.CLUB*\n\n"
         f"👤 *Имя:* {name}\n"
         f"📱 *Телефон:* {phone}\n"
         f"💬 *TG:* @{username} (id:{tg_id})\n"
         f"🔗 *AmoCRM:* https://eriarwork2201.amocrm.ru/leads/detail/{lead_id}\n\n"
-        f"{score_emoji} *Итоговый балл: {score}/100*\n"
+        f"{score_emoji} *Предварительный балл: {score_display}*\n"
         f"📋 *Вердикт:* {verdict}\n"
         f"📌 *Следующий шаг:* {next_step}\n"
         f"🚀 *Проект:* {project_fit}\n\n"

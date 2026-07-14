@@ -9,11 +9,14 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from handlers import router
 from middleware import ThrottlingMiddleware, VerificationMiddleware
+from runtime import webhook_replacement_allowed
 from scheduler import run_scheduler
 
-load_dotenv()
+os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,8 +39,18 @@ async def main():
     dp.message.middleware(ThrottlingMiddleware(rate_limit=1.0, burst=5))
     dp.message.middleware(VerificationMiddleware())
 
-    # Remove existing webhook (we use polling)
-    await bot.delete_webhook(drop_pending_updates=True)
+    # Never destroy an existing provider webhook implicitly. The live MUGON bot
+    # may be connected to Kommo; replacement requires an explicit operator opt-in.
+    webhook = await bot.get_webhook_info()
+    if webhook.url:
+        if not webhook_replacement_allowed():
+            await bot.session.close()
+            raise RuntimeError(
+                "Telegram webhook is already configured. Set "
+                "ALLOW_WEBHOOK_REPLACEMENT=true only during an approved cutover."
+            )
+        await bot.delete_webhook(drop_pending_updates=False)
+        logger.warning("Existing Telegram webhook removed after explicit opt-in")
     logger.info("MUGON HR Bot starting in polling mode...")
 
     # Start background scheduler
