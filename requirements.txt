@@ -1,11 +1,12 @@
 # MUGON HR Bot - Python dependencies
 aiogram==3.13.0
 openai==1.51.0
+httpx==0.27.2
 aiohttp==3.10.0
 python-dotenv==1.0.0
 redis==5.1.0
-pydantic==2.9.2
-aiofiles==24.1.0
+pydantic==2.8.2
+aiofiles==23.2.1
 apscheduler==3.10.4
 uvicorn==0.30.0
 fastapi==0.115.0

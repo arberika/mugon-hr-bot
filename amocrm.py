@@ -236,9 +236,9 @@ class AmoCRM:
                     })
 
         add_select("status",            ai_resume.get("status", "В процессе"))
-        add_select("verdict",           ai_resume.get("verdict", "Trial Task"))
-        add_select("employment_format", ai_resume.get("employment_format", "Full-time"))
-        add_numeric("hours_per_day",    ai_resume.get("hours_per_day", 8))
+        add_select("verdict",           ai_resume.get("verdict"))
+        add_select("employment_format", ai_resume.get("employment_format"))
+        add_numeric("hours_per_day",    ai_resume.get("hours_per_day"))
         add_text("projects_12m",        ai_resume.get("projects_12m"))
         add_text("hard_project",        ai_resume.get("hard_project"))
         add_text("stack_rationale",     ai_resume.get("stack_rationale"))
@@ -253,7 +253,7 @@ class AmoCRM:
         add_numeric("communication_score", ai_resume.get("communication_score"))
         add_numeric("total_score",         ai_resume.get("total_score"))
         add_multiselect("risks",    ai_resume.get("risks", []))
-        add_select("next_step",     ai_resume.get("next_step", "Тестовое задание"))
+        add_select("next_step",     ai_resume.get("next_step"))
         add_text("ai_summary",      ai_resume.get("ai_summary"))
 
         # FIX 4: real tech stack from GPT, not hardcoded Python

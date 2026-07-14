@@ -15,14 +15,24 @@ from aiogram.types import (
     Message, CallbackQuery,
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardRemove, KeyboardButtonRequestContact
+    ReplyKeyboardRemove,
 )
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from gpt import ask_hr_gpt, generate_ai_resume
 from amocrm import AmoCRM
 from notifier import notify_ceo_pm
+from onboarding_copy import (
+    ACTION_CLUB,
+    ACTION_MEETUP,
+    ACTION_PROFILE,
+    CLUB_INFO_TEXT,
+    MEETUP_TEXT,
+    PROFILE_CONSENT_TEXT,
+    START_TEXT,
+    split_completion_signal,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -39,10 +49,14 @@ CEO_TG_ID   = int(os.environ.get("CEO_TG_ID", "0"))
 PM_TG_ID    = int(os.environ.get("PM_TG_ID", "0"))
 PIPELINE_ID = int(os.environ.get("AMO_PIPELINE_ID", "10599910"))
 STATUS_NEW  = int(os.environ.get("AMO_STATUS_NEW", "83583878"))
+CLUB_URL = os.environ.get("MUGON_CLUB_URL", "https://t.me/MUGON_CLUB")
+MEETUP_URL = os.environ.get("MUGON_MEETUP_URL", CLUB_URL)
+MEETUP_AT = os.environ.get("MUGON_MEETUP_AT", "Дата и время будут опубликованы в группе")
 
 
 # FSM States
 class Interview(StatesGroup):
+    choosing_path      = State()
     waiting_contact    = State()
     phone_verified     = State()
     interviewing       = State()
@@ -54,9 +68,8 @@ class Interview(StatesGroup):
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Пройти собеседование")],
-            [KeyboardButton(text="Наши проекты"), KeyboardButton(text="Отправить резюме")],
-            [KeyboardButton(text="Поделиться номером", request_contact=True)],
+            [KeyboardButton(text=ACTION_CLUB), KeyboardButton(text=ACTION_MEETUP)],
+            [KeyboardButton(text=ACTION_PROFILE)],
             [KeyboardButton(text="FAQ"), KeyboardButton(text="Связаться с HR")],
         ],
         resize_keyboard=True,
@@ -85,15 +98,31 @@ def projects_inline() -> InlineKeyboardMarkup:
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    name = message.from_user.first_name or "кандидат"
+    name = message.from_user.first_name or "коллега"
     await message.answer(
-        f"Привет, {name}!\n\n"
-        "Я - HR-ассистент MUGON.CLUB. Мы строим команду профессионалов для реализации AI-проектов.\n\n"
-        "Чтобы начать - поделитесь номером телефона. Это необходимо для верификации.\n"
-        "После этого я проведу вас через короткое собеседование.",
-        reply_markup=share_contact_kb(),
+        START_TEXT.format(name=name),
+        reply_markup=main_menu(),
     )
+    await state.set_state(Interview.choosing_path)
+
+
+@router.message(F.text == ACTION_CLUB)
+async def show_club_intro(message: Message):
+    await message.answer(CLUB_INFO_TEXT.format(club_url=CLUB_URL), disable_web_page_preview=True)
+
+
+@router.message(F.text == ACTION_MEETUP)
+async def show_meetup(message: Message):
+    await message.answer(
+        MEETUP_TEXT.format(meetup_at=MEETUP_AT, meetup_url=MEETUP_URL),
+        disable_web_page_preview=True,
+    )
+
+
+@router.message(Interview.choosing_path, F.text == ACTION_PROFILE)
+async def begin_project_profile(message: Message, state: FSMContext):
     await state.set_state(Interview.waiting_contact)
+    await message.answer(PROFILE_CONSENT_TEXT, reply_markup=share_contact_kb())
 
 
 # Contact / Phone Verification
@@ -123,9 +152,11 @@ async def got_contact(message: Message, state: FSMContext, bot: Bot):
 
     await message.answer(
         f"Номер {phone} подтверждён!\n\n"
-        "Отлично, теперь начнём собеседование. Я задам вам несколько вопросов.\n"
-        "Отвечайте свободно - это живой диалог, не тест с правильными ответами.\n\n"
-        "Готовы? Тогда начнём",
+        "Теперь соберём короткий профиль для проектного подбора: роль, стек, один "
+        "реальный кейс, интересы и доступность. Обычно это 6–8 вопросов.\n"
+        "Отвечайте свободно — это не экзамен. Оценки по самоописанию не считаются "
+        "подтверждением навыков; доказательства проверяются отдельно и только с вашего согласия.\n\n"
+        "Начнём?",
         reply_markup=ReplyKeyboardRemove(),
     )
     await state.set_state(Interview.interviewing)
@@ -158,18 +189,20 @@ async def interview_message(message: Message, state: FSMContext, bot: Bot):
 
     history.append({"role": "user", "content": message.text})
 
-    # Hard limit: 30 questions
-    if questions_asked >= 30:
+    # Keep initial project profiling short. Evidence verification is separate.
+    if questions_asked >= 8:
         await finalize_interview(message, state, bot, history, lead_id, user_name)
         return
 
     gpt_reply = await ask_hr_gpt(history, "CONTINUE", user_name=user_name)
+    visible_reply, interview_complete = split_completion_signal(gpt_reply)
     history.append({"role": "assistant", "content": gpt_reply})
     await state.update_data(history=history, questions_asked=questions_asked + 1)
-    await message.answer(gpt_reply)
+    if visible_reply:
+        await message.answer(visible_reply)
 
     # FIX 2c: only trigger finalize on GPT signal, not on >=28 (caused double call)
-    if "INTERVIEW_COMPLETE" in gpt_reply:
+    if interview_complete:
         await finalize_interview(message, state, bot, history, lead_id, user_name)
 
 
@@ -224,8 +257,7 @@ async def finalize_interview(
     await state.update_data(finalized=True)
 
     await message.answer(
-        "Мы завершили основную часть собеседования!\n"
-        "Сейчас я формирую итоговое резюме и отправляю команде. Это займёт пару секунд..."
+        "Основная часть профиля готова. Сейчас аккуратно сохраню ответы для команды."
     )
 
     ai_resume = await generate_ai_resume(history, user_name)
@@ -237,12 +269,11 @@ async def finalize_interview(
     await state.set_state(Interview.completed)
 
     await message.answer(
-        "Ваше собеседование завершено.\n\n"
-        f"Ваш итоговый балл: *{ai_resume.get('total_score', '-')}/100*\n\n"
-        "Наша команда рассмотрит вашу кандидатуру и свяжется с вами в течение 2-3 рабочих дней.\n\n"
-        "Хотите узнать больше о наших проектах?",
-        reply_markup=projects_inline(),
-        parse_mode="Markdown",
+        "Профиль сохранён. Это ещё не техническая оценка и не решение по проекту.\n\n"
+        "Когда появится подходящая задача, команда сверит требования с вашим опытом "
+        "и отдельно предложит следующий шаг. Вы сможете согласиться или отказаться.\n\n"
+        "А пока можно продолжать участвовать в клубе и встречах.",
+        reply_markup=main_menu(),
     )
 
 
@@ -282,9 +313,9 @@ async def project_info(callback: CallbackQuery):
 
 
 # Menu Buttons
-@router.message(F.text == "Пройти собеседование")
+@router.message(F.text == ACTION_PROFILE)
 async def start_interview_btn(message: Message, state: FSMContext):
-    await cmd_start(message, state)
+    await begin_project_profile(message, state)
 
 
 @router.message(F.text == "Наши проекты")
@@ -297,15 +328,16 @@ async def faq(message: Message):
     await message.answer(
         "*Часто задаваемые вопросы*\n\n"
         "*Что такое MUGON.CLUB?*\n"
-        "Команда профессионалов, которая реализует AI-проекты от идеи до продукта.\n\n"
+        "Сообщество разработчиков для практических встреч, взаимопомощи и подходящих проектов.\n\n"
         "*Какой формат работы?*\n"
         "Full-time, part-time или проектная занятость. Удалённо.\n\n"
         "*Нужно ли платить за участие?*\n"
         "Нет. Мы платим за результат.\n\n"
-        "*Как проходит отбор?*\n"
-        "1. Собеседование в боте\n2. Тестовое задание\n3. Онбординг в проект\n\n"
-        "*Сколько длится собеседование?*\n"
-        "15-20 минут в формате диалога.",
+        "*Нужно ли сразу заполнять профиль?*\n"
+        "Нет. Можно читать группу и приходить на встречи без резюме и телефона.\n\n"
+        "*Как попасть в проект?*\n"
+        "Добровольно заполнить короткий профиль, затем подтвердить релевантный опыт "
+        "по материалам или на технической встрече.",
         parse_mode="Markdown",
     )
 
@@ -333,6 +365,15 @@ async def contact_hr(message: Message):
     )
 
 
+@router.message(Interview.choosing_path)
+async def explain_onboarding_choices(message: Message):
+    await message.answer(
+        "Выберите один из вариантов на клавиатуре. Можно просто узнать о клубе — "
+        "личные данные для этого не нужны.",
+        reply_markup=main_menu(),
+    )
+
+
 # Group: New member greeting
 @router.message(F.new_chat_members)
 async def new_member(message: Message):
@@ -340,11 +381,8 @@ async def new_member(message: Message):
         if not member.is_bot:
             await message.answer(
                 f"Привет, {member.first_name}! Добро пожаловать в MUGON.CLUB!\n\n"
-                f"Подпишитесь на нашего HR-бота @MUGON_CLUB_BOT - там вы сможете:\n"
-                f"- Пройти собеседование\n"
-                f"- Узнать о наших проектах\n"
-                f"- Получить тестовое задание\n\n"
-                f"Нажмите: @MUGON_CLUB_BOT"
+                "Можно просто читать, прийти на встречу слушателем или коротко "
+                "рассказать, чем занимаетесь. Резюме и показ кода для участия не нужны."
             )
 
 
@@ -361,7 +399,7 @@ async def pause_interview(message: Message, state: FSMContext):
 @router.message(Interview.completed)
 async def completed_state(message: Message):
     await message.answer(
-        "Вы уже прошли собеседование. Наша команда скоро свяжется с вами!\n"
-        "Если хотите узнать о проектах - нажмите 'Наши проекты'",
+        "Ваш проектный профиль уже сохранён. Пока можно участвовать в обсуждениях "
+        "и встречах; если появится подходящая задача, команда напишет отдельно.",
         reply_markup=main_menu(),
     )
