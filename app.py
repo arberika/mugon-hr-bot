@@ -27,6 +27,7 @@ async def health():
         "crm": "adminwowericom.kommo.com",
         "pipeline_id": int(os.environ.get("AMO_PIPELINE_ID", "14089467")),
         "status_id": int(os.environ.get("AMO_STATUS_NEW", "108772599")),
+        "webhook": True,
     }
 
 
