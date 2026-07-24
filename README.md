@@ -47,12 +47,12 @@ completed          — интервью завершено
 
 ---
 
-## AmoCRM Pipeline: MUGON.CLUB - Кандидаты (ID: 10599910)
+## Kommo Pipeline (ID: 14089467)
 
 | Этап | Status ID |
 |---|---|
 | Неразобранное | 83583874 |
-| Новичок в TG | 83583878 |
+| Новая заявка | 108772599 |
 | Регистрация сайт | 83583882 |
 | Заполнен профиль | 83583886 |
 | На тесте | 83587734 |
@@ -92,7 +92,7 @@ completed          — интервью завершено
 ## Важно: Существующий Webhook
 
 Бот @MUGON_CLUB_BOT имеет активный webhook от AmoCRM:
-`https://amojo.amocrm.ru/~external/hooks/telegram`
+`https://amojo.kommo.com/~external/hooks/telegram`
 
 При запуске нашего бота через `polling` конфликта нет.
 Если хочешь переключить на наш webhook — удали старый через:

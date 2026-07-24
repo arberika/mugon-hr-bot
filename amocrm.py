@@ -40,11 +40,6 @@ FIELD_IDS = {
     "ai_summary":           1739691,
 }
 
-PIPELINE_ID = 10599910
-STATUS_NEW     = 83583878
-STATUS_PROFILE = 83583886
-STATUS_TEST    = 83587734
-
 ENUMS = {
     "status": {
         "В процессе":    50054429,
@@ -97,19 +92,23 @@ TOKEN_TTL = 23 * 3600
 class AmoCRM:
     """AmoCRM API client with automatic OAuth2 token refresh."""
 
-    def __init__(self, domain: str, client_id: str, client_secret: str,
-                 redirect_uri: str, refresh_token: str):
-        self.domain = domain
+    def __init__(self, domain: str, client_id: str = "", client_secret: str = "",
+                 redirect_uri: str = "", refresh_token: str = "",
+                 long_term_token: str = ""):
+        self.domain = domain.replace("https://", "").replace("http://", "").strip("/")
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
         self.refresh_token = refresh_token
-        self.access_token: Optional[str] = None
+        self.access_token: Optional[str] = long_term_token or None
+        self.long_term_token = bool(long_term_token)
         self._token_obtained_at: float = 0  # FIX 1: track token fetch time
-        self.base_url = f"https://{domain}/api/v4"
+        self.base_url = f"https://{self.domain}/api/v4"
 
     async def _get_token(self) -> str:
         """Get or refresh access token. Auto-refreshes every 23 hours."""
+        if self.long_term_token and self.access_token:
+            return self.access_token
         # FIX 1: reuse token only if it is still fresh
         if self.access_token and (time.time() - self._token_obtained_at) < TOKEN_TTL:
             return self.access_token
@@ -185,9 +184,6 @@ class AmoCRM:
                     "pipeline_id": pipeline_id,
                     "status_id":   status_id,
                     "_embedded":   {"contacts": [{"id": contact_id}]},
-                    "custom_fields_values": [
-                        {"field_id": 1739629, "values": [{"enum_id": 50054429}]},
-                    ]
                 }]
             ) as resp:
                 ldata = await resp.json()
@@ -196,85 +192,24 @@ class AmoCRM:
                 return lead_id
 
     async def update_lead_fields(self, lead_id: int, ai_resume: dict) -> None:
-        """Update all MUGON RESUME fields in AmoCRM lead."""
+        """Preserve the complete interview result in a portable Kommo note."""
         headers = await self._headers()
-        custom_fields = []
-
-        def add_text(field_key: str, value):
-            if value and field_key in FIELD_IDS:
-                custom_fields.append({
-                    "field_id": FIELD_IDS[field_key],
-                    "values": [{"value": str(value)}]
-                })
-
-        def add_select(field_key: str, value: str):
-            if value and field_key in FIELD_IDS and field_key in ENUMS:
-                enum_id = ENUMS[field_key].get(value)
-                if enum_id:
-                    custom_fields.append({
-                        "field_id": FIELD_IDS[field_key],
-                        "values": [{"enum_id": enum_id}]
-                    })
-
-        def add_numeric(field_key: str, value):
-            if value is not None and field_key in FIELD_IDS:
-                custom_fields.append({
-                    "field_id": FIELD_IDS[field_key],
-                    "values": [{"value": int(value)}]
-                })
-
-        def add_multiselect(field_key: str, values: list):
-            if values and field_key in FIELD_IDS and field_key in ENUMS:
-                enum_values = [
-                    {"enum_id": ENUMS[field_key][v]}
-                    for v in values if v in ENUMS[field_key]
-                ]
-                if enum_values:
-                    custom_fields.append({
-                        "field_id": FIELD_IDS[field_key],
-                        "values": enum_values
-                    })
-
-        add_select("status",            ai_resume.get("status", "В процессе"))
-        add_select("verdict",           ai_resume.get("verdict", "Trial Task"))
-        add_select("employment_format", ai_resume.get("employment_format", "Full-time"))
-        add_numeric("hours_per_day",    ai_resume.get("hours_per_day", 8))
-        add_text("projects_12m",        ai_resume.get("projects_12m"))
-        add_text("hard_project",        ai_resume.get("hard_project"))
-        add_text("stack_rationale",     ai_resume.get("stack_rationale"))
-        add_text("architecture",        ai_resume.get("architecture"))
-        add_text("tg_openai_cases",     ai_resume.get("tg_openai_cases"))
-        add_text("monitoring",          ai_resume.get("monitoring"))
-        add_text("security_practice",   ai_resume.get("security_practice"))
-        add_numeric("engineering_score",   ai_resume.get("engineering_score"))
-        add_numeric("ai_automation_score", ai_resume.get("ai_automation_score"))
-        add_numeric("architecture_score",  ai_resume.get("architecture_score"))
-        add_numeric("delivery_score",      ai_resume.get("delivery_score"))
-        add_numeric("communication_score", ai_resume.get("communication_score"))
-        add_numeric("total_score",         ai_resume.get("total_score"))
-        add_multiselect("risks",    ai_resume.get("risks", []))
-        add_select("next_step",     ai_resume.get("next_step", "Тестовое задание"))
-        add_text("ai_summary",      ai_resume.get("ai_summary"))
-
-        # FIX 4: real tech stack from GPT, not hardcoded Python
-        stack = ai_resume.get("tech_stack", [])
-        if stack:
-            if isinstance(stack, str):
-                stack = [s.strip() for s in stack.replace(",", " ").split() if s.strip()]
-            if isinstance(stack, list):
-                add_multiselect("tech_stack", stack)
-
+        lines = ["MUGON HR — итог собеседования"]
+        for key, value in ai_resume.items():
+            if value not in (None, "", []):
+                rendered = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+                lines.append(f"{key}: {rendered}")
         async with aiohttp.ClientSession() as session:
-            async with session.patch(
-                f"{self.base_url}/leads/{lead_id}",
+            async with session.post(
+                f"{self.base_url}/leads/{lead_id}/notes",
                 headers=headers,
-                json={"custom_fields_values": custom_fields}
+                json=[{"note_type": "common", "params": {"text": "\n".join(lines)}}],
             ) as resp:
                 if resp.status not in (200, 201):
                     text = await resp.text()
-                    logger.error(f"AmoCRM update error {resp.status}: {text}")
+                    logger.error(f"Kommo note error {resp.status}: {text}")
                 else:
-                    logger.info(f"Updated lead {lead_id} with {len(custom_fields)} fields")
+                    logger.info(f"Stored interview result on lead {lead_id}")
 
     # FIX 5: correct resume upload via /drives/files then attach as note
     async def upload_resume_file(self, lead_id: int, file_bytes, file_name: str) -> None:

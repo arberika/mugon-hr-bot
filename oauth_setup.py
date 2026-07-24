@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration - read from .env or set here
-AMO_DOMAIN    = os.environ.get("AMO_DOMAIN", "yourname.amocrm.ru")
+AMO_DOMAIN    = os.environ.get("KOMMO_DOMAIN") or os.environ.get("AMO_DOMAIN", "adminwowericom.kommo.com")
 CLIENT_ID     = os.environ.get("AMO_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("AMO_CLIENT_SECRET", "")
 REDIRECT_URI  = os.environ.get("AMO_REDIRECT_URI", "https://yoursite.com/oauth/callback")
@@ -37,7 +37,7 @@ def get_auth_url() -> str:
         f"&mode=post_message"
         f"&redirect_uri={REDIRECT_URI}"
     )
-    return "https://www.amocrm.ru/oauth" + params
+    return "https://www.kommo.com/oauth" + params
 
 
 async def exchange_code(code: str) -> dict:

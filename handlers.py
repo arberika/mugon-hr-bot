@@ -15,7 +15,7 @@ from aiogram.types import (
     Message, CallbackQuery,
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardRemove, KeyboardButtonRequestContact
+    ReplyKeyboardRemove
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -28,17 +28,18 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 amo = AmoCRM(
-    domain=os.environ["AMO_DOMAIN"],
-    client_id=os.environ["AMO_CLIENT_ID"],
-    client_secret=os.environ["AMO_CLIENT_SECRET"],
-    redirect_uri=os.environ["AMO_REDIRECT_URI"],
-    refresh_token=os.environ["AMO_REFRESH_TOKEN"],
+    domain=os.environ.get("KOMMO_DOMAIN") or os.environ.get("AMO_DOMAIN", "adminwowericom.kommo.com"),
+    client_id=os.environ.get("AMO_CLIENT_ID", ""),
+    client_secret=os.environ.get("AMO_CLIENT_SECRET", ""),
+    redirect_uri=os.environ.get("AMO_REDIRECT_URI", ""),
+    refresh_token=os.environ.get("AMO_REFRESH_TOKEN", ""),
+    long_term_token=os.environ.get("KOMMO_TOKEN") or os.environ.get("AMO_LONG_TERM_TOKEN", ""),
 )
 
 CEO_TG_ID   = int(os.environ.get("CEO_TG_ID", "0"))
 PM_TG_ID    = int(os.environ.get("PM_TG_ID", "0"))
-PIPELINE_ID = int(os.environ.get("AMO_PIPELINE_ID", "10599910"))
-STATUS_NEW  = int(os.environ.get("AMO_STATUS_NEW", "83583878"))
+PIPELINE_ID = int(os.environ.get("AMO_PIPELINE_ID", "14089467"))
+STATUS_NEW  = int(os.environ.get("AMO_STATUS_NEW", "108772599"))
 
 
 # FSM States
