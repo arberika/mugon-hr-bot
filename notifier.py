@@ -3,6 +3,7 @@ notifier.py - Notification system for MUGON HR Bot
 Sends formatted candidate reports to CEO and Project Manager via Telegram
 """
 import logging
+import os
 from aiogram import Bot
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ async def notify_ceo_pm(
         f"👤 *Имя:* {name}\n"
         f"📱 *Телефон:* {phone}\n"
         f"💬 *TG:* @{username} (id:{tg_id})\n"
-        f"🔗 *AmoCRM:* https://eriarwork2201.amocrm.ru/leads/detail/{lead_id}\n\n"
+        f"🔗 *Kommo:* https://{os.environ.get('KOMMO_DOMAIN', 'adminwowericom.kommo.com')}/leads/detail/{lead_id}\n\n"
         f"{score_emoji} *Итоговый балл: {score}/100*\n"
         f"📋 *Вердикт:* {verdict}\n"
         f"📌 *Следующий шаг:* {next_step}\n"

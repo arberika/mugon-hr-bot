@@ -8,7 +8,7 @@ import logging
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
-client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "not-configured"))
 
 # System prompt for the HR agent
 SYSTEM_PROMPT = ("""
