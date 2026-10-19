@@ -113,7 +113,7 @@ class AmoCRM:
         if self.access_token and (time.time() - self._token_obtained_at) < TOKEN_TTL:
             return self.access_token
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(
                 f"https://{self.domain}/oauth2/access_token",
                 json={
@@ -143,7 +143,7 @@ class AmoCRM:
                                    pipeline_id: int, status_id: int) -> int:
         """Find existing lead by phone or create new one."""
         headers = await self._headers()
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.get(
                 f"{self.base_url}/contacts",
                 params={"query": phone},
@@ -199,7 +199,7 @@ class AmoCRM:
             if value not in (None, "", []):
                 rendered = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
                 lines.append(f"{key}: {rendered}")
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(
                 f"{self.base_url}/leads/{lead_id}/notes",
                 headers=headers,
@@ -207,17 +207,18 @@ class AmoCRM:
             ) as resp:
                 if resp.status not in (200, 201):
                     text = await resp.text()
-                    logger.error(f"Kommo note error {resp.status}: {text}")
+                    logger.error(f"Kommo note error {resp.status}")
+                    raise RuntimeError(f"Kommo note was not saved: HTTP {resp.status}")
                 else:
                     logger.info(f"Stored interview result on lead {lead_id}")
 
     # FIX 5: correct resume upload via /drives/files then attach as note
-    async def upload_resume_file(self, lead_id: int, file_bytes, file_name: str) -> None:
+    async def upload_resume_file(self, lead_id: int, file_bytes, file_name: str) -> bool:
         """Upload resume file via AmoCRM Drives API, then attach to lead note."""
         token = await self._get_token()
         auth_header = {"Authorization": f"Bearer {token}"}
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             # Step 1: upload to AmoCRM Drives
             form = aiohttp.FormData()
             form.add_field(
@@ -234,15 +235,13 @@ class AmoCRM:
                 if resp.status not in (200, 201):
                     text = await resp.text()
                     logger.warning(f"Resume upload to drives failed {resp.status}: {text}")
-                    await self.add_note(lead_id, f"Резюме кандидата: {file_name} (авто-загрузка не удалась)")
-                    return
+                    return False
                 file_data = await resp.json()
                 file_uuid = file_data.get("uuid") or file_data.get("id")
 
             if not file_uuid:
                 logger.warning("No file UUID returned from AmoCRM drives API")
-                await self.add_note(lead_id, f"Резюме: {file_name} (UUID не получен)")
-                return
+                return False
 
             # Step 2: attach uploaded file to lead as note
             async with session.post(
@@ -258,13 +257,15 @@ class AmoCRM:
             ) as resp:
                 if resp.status not in (200, 201):
                     logger.warning(f"Note attachment failed {resp.status}")
+                    return False
                 else:
                     logger.info(f"Resume '{file_name}' attached to lead {lead_id}")
+                    return True
 
     async def add_note(self, lead_id: int, text: str) -> None:
         """Add a plain text note to a lead."""
         headers = await self._headers()
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             await session.post(
                 f"{self.base_url}/leads/{lead_id}/notes",
                 headers=headers,
@@ -274,7 +275,7 @@ class AmoCRM:
     async def move_lead_to_stage(self, lead_id: int, status_id: int) -> None:
         """Move lead to a different pipeline stage."""
         headers = await self._headers()
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             await session.patch(
                 f"{self.base_url}/leads/{lead_id}",
                 headers=headers,

@@ -14,7 +14,7 @@ from middleware import ThrottlingMiddleware, VerificationMiddleware
 
 app = FastAPI(title="MUGON HR Bot", docs_url=None, redoc_url=None)
 storage = RedisStorage.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379"))
-dispatcher = Dispatcher(storage=storage)
+dispatcher = Dispatcher(storage=storage, events_isolation=storage.create_isolation(lock_kwargs={"timeout": 300}))
 dispatcher.include_router(router)
 dispatcher.message.middleware(ThrottlingMiddleware(rate_limit=1.0, burst=5))
 dispatcher.message.middleware(VerificationMiddleware())

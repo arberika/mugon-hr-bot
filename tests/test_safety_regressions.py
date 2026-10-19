@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock
+from onboarding_copy import split_completion_signal
 
 ROOT = Path(os.environ.get("MUGON_SOURCE_DIR", Path(__file__).resolve().parents[1]))
 
@@ -43,6 +44,7 @@ class ContactOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.gpt = AsyncMock(return_value="Synthetic first question")
         self.ns = load_functions("handlers.py", ["got_contact"], {
             "amo": self.amo, "ask_hr_gpt": self.gpt,
+            "split_completion_signal": split_completion_signal,
             "share_contact_kb": lambda: "share-own-contact",
             "ReplyKeyboardRemove": lambda: "remove-keyboard",
             "Interview": NS(phone_verified="verified", interviewing="interview"),
@@ -102,17 +104,18 @@ class PollingStartupTests(unittest.IsolatedAsyncioTestCase):
             return task
         self.spawn = Mock(side_effect=create_task)
         self.scheduler = AsyncMock()
+        self.storage = NS(close=AsyncMock(), create_isolation=Mock())
         self.ns = load_functions("bot.py", ["ensure_polling_allowed", "main"], {
             "Bot": Mock(return_value=self.bot), "Dispatcher": Mock(return_value=self.dp),
-            "RedisStorage": NS(from_url=Mock(return_value=NS())),
+            "RedisStorage": NS(from_url=Mock(return_value=self.storage)),
             "os": NS(environ={"TELEGRAM_BOT_TOKEN": "synthetic-not-a-credential"}),
             "router": NS(), "ThrottlingMiddleware": Mock(), "VerificationMiddleware": Mock(),
-            "logger": Mock(), "asyncio": NS(create_task=self.spawn), "run_scheduler": self.scheduler,
+            "logger": Mock(), "asyncio": NS(create_task=self.spawn, gather=asyncio.gather), "run_scheduler": self.scheduler,
         })
 
     async def asyncTearDown(self):
         if self.tasks:
-            await asyncio.gather(*self.tasks)
+            await asyncio.gather(*self.tasks, return_exceptions=True)
 
     async def test_active_webhook_blocks_polling_and_scheduler(self):
         self.bot.get_webhook_info.return_value = NS(url="https://example.invalid/webhook")
@@ -122,6 +125,7 @@ class PollingStartupTests(unittest.IsolatedAsyncioTestCase):
         self.spawn.assert_not_called()
         self.bot.delete_webhook.assert_not_awaited()
         self.bot.session.close.assert_awaited_once()
+        self.storage.close.assert_awaited_once()
 
     async def test_lookup_failure_fails_closed_and_closes_session(self):
         self.bot.get_webhook_info.side_effect = TimeoutError("synthetic timeout")
@@ -131,6 +135,7 @@ class PollingStartupTests(unittest.IsolatedAsyncioTestCase):
         self.spawn.assert_not_called()
         self.bot.delete_webhook.assert_not_awaited()
         self.bot.session.close.assert_awaited_once()
+        self.storage.close.assert_awaited_once()
 
     async def test_empty_webhook_allows_polling_without_deletion(self):
         await self.ns["main"]()
@@ -139,6 +144,7 @@ class PollingStartupTests(unittest.IsolatedAsyncioTestCase):
         self.spawn.assert_called_once()
         self.bot.delete_webhook.assert_not_awaited()
         self.bot.session.close.assert_awaited_once()
+        self.storage.close.assert_awaited_once()
 
     async def test_polling_failure_still_closes_session(self):
         self.dp.start_polling.side_effect = RuntimeError("synthetic polling error")
@@ -146,6 +152,7 @@ class PollingStartupTests(unittest.IsolatedAsyncioTestCase):
             await self.ns["main"]()
         self.bot.delete_webhook.assert_not_awaited()
         self.bot.session.close.assert_awaited_once()
+        self.storage.close.assert_awaited_once()
 
     def test_entrypoint_contains_no_webhook_mutation_calls(self):
         tree = ast.parse((ROOT / "bot.py").read_text())

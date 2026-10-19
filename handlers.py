@@ -23,6 +23,10 @@ from aiogram.fsm.state import State, StatesGroup
 from gpt import ask_hr_gpt, generate_ai_resume
 from amocrm import AmoCRM
 from notifier import notify_ceo_pm
+from onboarding_copy import (
+    ACTION_CLUB, ACTION_MEETUP, ACTION_PROFILE, CLUB_INFO_TEXT, MEETUP_TEXT,
+    PROFILE_CONSENT_TEXT, START_TEXT, split_completion_signal,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -42,22 +46,29 @@ PIPELINE_ID = int(os.environ.get("AMO_PIPELINE_ID", "14089467"))
 STATUS_NEW  = int(os.environ.get("AMO_STATUS_NEW", "108772599"))
 
 
+CLUB_URL = os.environ.get("MUGON_CLUB_URL", "https://t.me/MUGON_CLUB")
+MEETUP_URL = os.environ.get("MUGON_MEETUP_URL") or CLUB_URL
+MEETUP_AT = os.environ.get("MUGON_MEETUP_AT") or "Дата и время будут опубликованы в группе"
+
+
 # FSM States
 class Interview(StatesGroup):
+    choosing_path      = State()
+    paused             = State()
     waiting_contact    = State()
     phone_verified     = State()
     interviewing       = State()
     waiting_resume_file = State()
     completed          = State()
+    finalizing         = State()
 
 
 # Keyboards
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Пройти собеседование")],
-            [KeyboardButton(text="Наши проекты"), KeyboardButton(text="Отправить резюме")],
-            [KeyboardButton(text="Поделиться номером", request_contact=True)],
+            [KeyboardButton(text=ACTION_CLUB), KeyboardButton(text=ACTION_MEETUP)],
+            [KeyboardButton(text=ACTION_PROFILE)],
             [KeyboardButton(text="FAQ"), KeyboardButton(text="Связаться с HR")],
         ],
         resize_keyboard=True,
@@ -67,7 +78,11 @@ def main_menu() -> ReplyKeyboardMarkup:
 
 def share_contact_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Поделиться номером телефона", request_contact=True)]],
+        keyboard=[
+            [KeyboardButton(text="Поделиться номером телефона", request_contact=True)],
+            [KeyboardButton(text=ACTION_CLUB), KeyboardButton(text=ACTION_MEETUP)],
+            [KeyboardButton(text="стоп")],
+        ],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -86,15 +101,109 @@ def projects_inline() -> InlineKeyboardMarkup:
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    name = message.from_user.first_name or "кандидат"
+    name = message.from_user.first_name or "коллега"
     await message.answer(
-        f"Привет, {name}!\n\n"
-        "Я - HR-ассистент MUGON.CLUB. Мы строим команду профессионалов для реализации AI-проектов.\n\n"
-        "Чтобы начать - поделитесь номером телефона. Это необходимо для верификации.\n"
-        "После этого я проведу вас через короткое собеседование.",
-        reply_markup=share_contact_kb(),
+        START_TEXT.format(name=name),
+        reply_markup=main_menu(),
     )
+    await state.set_state(Interview.choosing_path)
+
+
+@router.message(F.text == ACTION_CLUB)
+async def show_club_intro(message: Message):
+    await message.answer(CLUB_INFO_TEXT.format(club_url=CLUB_URL), disable_web_page_preview=True)
+
+
+@router.message(F.text == ACTION_MEETUP)
+async def show_meetup(message: Message):
+    await message.answer(
+        MEETUP_TEXT.format(meetup_at=MEETUP_AT, meetup_url=MEETUP_URL),
+        disable_web_page_preview=True,
+    )
+
+
+@router.message(F.text == ACTION_PROFILE)
+async def begin_project_profile(message: Message, state: FSMContext, bot: Bot):
+    current_state = await state.get_state()
+    if current_state == Interview.finalizing.state:
+        await retry_finalization(message, state, bot)
+        return
+    if current_state == Interview.completed.state:
+        await completed_state(message)
+        return
+    if current_state == Interview.paused.state and (await state.get_data()).get("finalization_pending"):
+        await retry_finalization(message, state, bot)
+        return
+    if current_state in (Interview.interviewing.state, Interview.paused.state):
+        await state.set_state(Interview.interviewing)
+        await state.update_data(last_activity=time.time())
+        await message.answer("Продолжим с сохранённого места. Ответьте на последний вопрос.", reply_markup=ReplyKeyboardRemove())
+        return
     await state.set_state(Interview.waiting_contact)
+    await message.answer(PROFILE_CONSENT_TEXT, reply_markup=share_contact_kb())
+
+
+# Handle explicit pause before any state-specific catch-all or GPT handler.
+@router.message(F.text.lower().in_({"стоп", "пауза", "позже", "потом", "/stop", "/cancel"}))
+async def pause_interview(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state in (Interview.interviewing.state, Interview.waiting_resume_file.state, Interview.finalizing.state):
+        await state.set_state(Interview.paused)
+    elif current_state == Interview.waiting_contact.state:
+        await state.set_state(Interview.choosing_path)
+    await message.answer(
+        "Хорошо. Напоминаний не будет. Сохранённый профиль можно продолжить кнопкой «Профиль для проектов».",
+        reply_markup=main_menu(),
+    )
+
+
+# Menu Buttons
+@router.message(F.text == "Наши проекты")
+async def show_projects(message: Message):
+    await message.answer("Выберите проект для подробной информации:", reply_markup=projects_inline())
+
+
+@router.message(F.text == "FAQ")
+async def faq(message: Message):
+    await message.answer(
+        "*Часто задаваемые вопросы*\n\n"
+        "*Что такое MUGON.CLUB?*\n"
+        "Сообщество разработчиков для практических встреч, взаимопомощи и подходящих проектов.\n\n"
+        "*Какой формат работы?*\n"
+        "Full-time, part-time или проектная занятость. Удалённо.\n\n"
+        "*Нужно ли платить за участие?*\n"
+        "Нет. Мы платим за результат.\n\n"
+        "*Нужно ли сразу заполнять профиль?*\n"
+        "Нет. Можно читать группу и приходить на встречи без резюме и телефона.\n\n"
+        "*Как попасть в проект?*\n"
+        "Добровольно заполнить короткий профиль, затем подтвердить релевантный опыт "
+        "по материалам или на технической встрече.",
+        parse_mode="Markdown",
+    )
+
+
+@router.message(F.text == "Отправить резюме")
+async def request_resume(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("lead_id"):
+        await message.answer("Сначала нужно пройти верификацию. Нажмите /start")
+        return
+    await state.set_state(Interview.waiting_resume_file)
+    await message.answer(
+        "Отправьте файл резюме (PDF, DOCX или фото). "
+        "Файл будет передан команде. Опишите ключевой опыт сообщением: бот не читает содержимое вложений.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@router.message(F.text == "Связаться с HR")
+async def contact_hr(message: Message):
+    await message.answer(
+        "Вы можете связаться с HR напрямую:\n"
+        "hr@mugon.club\n"
+        "Напишите на этот адрес, чтобы вопрос получил HR."
+    )
+
 
 
 # Contact / Phone Verification
@@ -137,23 +246,31 @@ async def got_contact(message: Message, state: FSMContext, bot: Bot):
 
     await message.answer(
         f"Номер {phone} подтверждён!\n\n"
-        "Отлично, теперь начнём собеседование. Я задам вам несколько вопросов.\n"
-        "Отвечайте свободно - это живой диалог, не тест с правильными ответами.\n\n"
-        "Готовы? Тогда начнём",
+        "Теперь соберём короткий профиль для проектного подбора: роль, стек, один "
+        "реальный кейс, интересы и доступность. Обычно это 6–8 вопросов.\n"
+        "Отвечайте свободно — это не экзамен. Оценки по самоописанию не считаются "
+        "подтверждением навыков; доказательства проверяются отдельно и только с вашего согласия.\n\n"
+        "Начнём?",
         reply_markup=ReplyKeyboardRemove(),
     )
     await state.set_state(Interview.interviewing)
-    await state.update_data(history=[], questions_asked=0, scores={}, finalized=False)
+    await state.update_data(history=[], questions_asked=0, scores={}, finalized=False, reminders_sent=0)
 
     first_q = await ask_hr_gpt([], "START_INTERVIEW", user_name=user.first_name)
-    await message.answer(first_q)
+    visible_reply, complete = split_completion_signal(first_q)
+    history = [{"role": "assistant", "content": first_q}]
+    await state.update_data(history=history, questions_asked=1)
+    if visible_reply:
+        await message.answer(visible_reply)
+    if complete:
+        await finalize_interview(message, state, bot, history, lead_id, user.first_name)
 
 
 @router.message(Interview.waiting_contact)
 async def request_contact_again(message: Message):
     await message.answer(
-        "Для продолжения необходимо поделиться номером телефона.\n"
-        "Нажмите кнопку ниже",
+        "Номер нужен только для добровольного проектного профиля.\n"
+        "Можно поделиться своим контактом кнопкой ниже или нажать «стоп».",
         reply_markup=share_contact_kb(),
     )
 
@@ -172,21 +289,23 @@ async def interview_message(message: Message, state: FSMContext, bot: Bot):
 
     history.append({"role": "user", "content": message.text})
 
-    # Hard limit: 30 questions
-    if questions_asked >= 30:
+    # Keep initial project profiling short. Evidence verification is separate.
+    if questions_asked >= 8:
         await finalize_interview(message, state, bot, history, lead_id, user_name)
         return
 
     gpt_reply = await ask_hr_gpt(history, "CONTINUE", user_name=user_name)
+    visible_reply, interview_complete = split_completion_signal(gpt_reply)
     history.append({"role": "assistant", "content": gpt_reply})
     await state.update_data(history=history, questions_asked=questions_asked + 1)
-    await message.answer(gpt_reply)
+    if visible_reply:
+        await message.answer(visible_reply)
 
-    # FIX 2c: only trigger finalize on GPT signal, not on >=28 (caused double call)
-    if "INTERVIEW_COMPLETE" in gpt_reply:
+    if interview_complete:
         await finalize_interview(message, state, bot, history, lead_id, user_name)
 
 
+@router.message(Interview.waiting_resume_file, F.document | F.photo)
 @router.message(Interview.interviewing, F.document | F.photo)
 async def interview_resume_file(message: Message, state: FSMContext, bot: Bot):
     """Handle resume file upload during interview."""
@@ -205,23 +324,38 @@ async def interview_resume_file(message: Message, state: FSMContext, bot: Bot):
     else:
         return
 
-    file       = await bot.get_file(file_id)
-    file_bytes = await bot.download_file(file.file_path)
-
-    if lead_id:
-        await amo.upload_resume_file(lead_id, file_bytes, file_name)
+    try:
+        if not lead_id:
+            raise RuntimeError("Resume has no CRM lead")
+        file = await bot.get_file(file_id)
+        file_bytes = await bot.download_file(file.file_path)
+        uploaded = await amo.upload_resume_file(lead_id, file_bytes, file_name)
+    except Exception:
+        logger.exception("Resume attachment failed")
+        uploaded = False
+    if not uploaded:
+        await message.answer("Не удалось сохранить файл в карточке. Попробуйте отправить его позже; ваш профиль сохранён в текущей сессии.")
+        return
 
     await message.answer(
         "Резюме получено и сохранено в вашей карточке!\n"
-        "Я его изучу и задам только недостающие вопросы. Продолжаем"
+        "Файл передан команде. Бот не читает его содержимое: опишите ключевой опыт сообщением."
     )
 
     history = data.get("history", [])
     history.append({"role": "user", "content": f"[Кандидат прислал резюме: {file_name}]"})
+    if data.get("questions_asked", 0) >= 8:
+        await finalize_interview(message, state, bot, history, lead_id, message.from_user.first_name)
+        return
     gpt_reply = await ask_hr_gpt(history, "RESUME_RECEIVED", user_name=message.from_user.first_name)
     history.append({"role": "assistant", "content": gpt_reply})
-    await state.update_data(history=history)
-    await message.answer(gpt_reply)
+    visible_reply, complete = split_completion_signal(gpt_reply)
+    await state.update_data(history=history, questions_asked=data.get("questions_asked", 0) + 1)
+    await state.set_state(Interview.interviewing)
+    if visible_reply:
+        await message.answer(visible_reply)
+    if complete:
+        await finalize_interview(message, state, bot, history, lead_id, message.from_user.first_name)
 
 
 async def finalize_interview(
@@ -231,33 +365,55 @@ async def finalize_interview(
     """Finalize interview: generate AI resume, update AmoCRM, notify CEO/PM."""
     data = await state.get_data()
 
-    # FIX 2d: idempotent guard - prevent double execution
+    # Dispatcher event isolation serializes this user's updates via existing Redis.
     if data.get("finalized"):
-        logger.warning(f"finalize_interview called twice for lead {lead_id} - skipping")
         return
-    await state.update_data(finalized=True)
-
-    await message.answer(
-        "Мы завершили основную часть собеседования!\n"
-        "Сейчас я формирую итоговое резюме и отправляю команде. Это займёт пару секунд..."
-    )
-
-    ai_resume = await generate_ai_resume(history, user_name)
-
-    if lead_id:
-        await amo.update_lead_fields(lead_id, ai_resume)
-
-    await notify_ceo_pm(bot, CEO_TG_ID, PM_TG_ID, data, ai_resume)
+    await state.set_state(Interview.finalizing)
+    await state.update_data(history=history, finalization_pending=True)
+    await message.answer("Сохраняю профиль. Если сервис временно недоступен, можно будет повторить.")
+    try:
+        ai_resume = data.get("generated_resume")
+        if ai_resume is None:
+            ai_resume = await generate_ai_resume(history, user_name)
+            await state.update_data(generated_resume=ai_resume)
+        if not lead_id:
+            raise RuntimeError("Profile has no CRM lead")
+        if not data.get("profile_saved"):
+            await amo.update_lead_fields(lead_id, ai_resume)
+            await state.update_data(profile_saved=True)
+        result = await notify_ceo_pm(
+            bot, CEO_TG_ID, PM_TG_ID, data, ai_resume,
+            skip_recipients=data.get("notified_recipients", []),
+        )
+        await state.update_data(notified_recipients=result["delivered"])
+        if result["failed"]:
+            await message.answer("Профиль сохранён в CRM, но уведомление команде пока не доставлено. Напишите «повторить», чтобы попробовать ещё раз.")
+            return
+    except Exception:
+        logger.exception("Profile finalization interrupted")
+        await message.answer("Завершение профиля пока не удалось. Ответы сохранены в сессии. Напишите «повторить», чтобы продолжить без повторного интервью.")
+        return
+    await state.update_data(finalized=True, finalization_pending=False)
     await state.set_state(Interview.completed)
 
     await message.answer(
-        "Ваше собеседование завершено.\n\n"
-        f"Ваш итоговый балл: *{ai_resume.get('total_score', '-')}/100*\n\n"
-        "Наша команда рассмотрит вашу кандидатуру и свяжется с вами в течение 2-3 рабочих дней.\n\n"
-        "Хотите узнать больше о наших проектах?",
-        reply_markup=projects_inline(),
-        parse_mode="Markdown",
+        "Профиль сохранён. Это ещё не техническая оценка и не решение по проекту.\n\n"
+        "Когда появится подходящая задача, команда сверит требования с вашим опытом "
+        "и отдельно предложит следующий шаг. Вы сможете согласиться или отказаться.\n\n"
+        "А пока можно продолжать участвовать в клубе и встречах.",
+        reply_markup=main_menu(),
     )
+
+
+@router.message(Interview.finalizing, F.text.lower().in_({"повторить", "/retry"}))
+async def retry_finalization(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await finalize_interview(message, state, bot, data.get("history", []), data.get("lead_id"), message.from_user.first_name)
+
+
+@router.message(Interview.finalizing)
+async def explain_finalization_retry(message: Message):
+    await message.answer("Завершение профиля ожидает повтора. Напишите «повторить» или «стоп», чтобы оставить его на паузе.")
 
 
 # Project Info
@@ -295,55 +451,12 @@ async def project_info(callback: CallbackQuery):
     await callback.answer()
 
 
-# Menu Buttons
-@router.message(F.text == "Пройти собеседование")
-async def start_interview_btn(message: Message, state: FSMContext):
-    await cmd_start(message, state)
-
-
-@router.message(F.text == "Наши проекты")
-async def show_projects(message: Message):
-    await message.answer("Выберите проект для подробной информации:", reply_markup=projects_inline())
-
-
-@router.message(F.text == "FAQ")
-async def faq(message: Message):
+@router.message(Interview.choosing_path)
+async def explain_onboarding_choices(message: Message):
     await message.answer(
-        "*Часто задаваемые вопросы*\n\n"
-        "*Что такое MUGON.CLUB?*\n"
-        "Команда профессионалов, которая реализует AI-проекты от идеи до продукта.\n\n"
-        "*Какой формат работы?*\n"
-        "Full-time, part-time или проектная занятость. Удалённо.\n\n"
-        "*Нужно ли платить за участие?*\n"
-        "Нет. Мы платим за результат.\n\n"
-        "*Как проходит отбор?*\n"
-        "1. Собеседование в боте\n2. Тестовое задание\n3. Онбординг в проект\n\n"
-        "*Сколько длится собеседование?*\n"
-        "15-20 минут в формате диалога.",
-        parse_mode="Markdown",
-    )
-
-
-@router.message(F.text == "Отправить резюме")
-async def request_resume(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if not data.get("lead_id"):
-        await message.answer("Сначала нужно пройти верификацию. Нажмите /start")
-        return
-    await state.set_state(Interview.waiting_resume_file)
-    await message.answer(
-        "Отправьте файл резюме (PDF, DOCX или фото). "
-        "Я изучу его и задам только недостающие вопросы.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-
-
-@router.message(F.text == "Связаться с HR")
-async def contact_hr(message: Message):
-    await message.answer(
-        "Вы можете связаться с HR напрямую:\n"
-        "hr@mugon.club\n"
-        "Или напишите свой вопрос, и я передам его команде."
+        "Выберите один из вариантов на клавиатуре. Можно просто узнать о клубе — "
+        "личные данные для этого не нужны.",
+        reply_markup=main_menu(),
     )
 
 
@@ -354,20 +467,16 @@ async def new_member(message: Message):
         if not member.is_bot:
             await message.answer(
                 f"Привет, {member.first_name}! Добро пожаловать в MUGON.CLUB!\n\n"
-                f"Подпишитесь на нашего HR-бота @MUGON_CLUB_BOT - там вы сможете:\n"
-                f"- Пройти собеседование\n"
-                f"- Узнать о наших проектах\n"
-                f"- Получить тестовое задание\n\n"
-                f"Нажмите: @MUGON_CLUB_BOT"
+                "Можно просто читать, прийти на встречу слушателем или коротко "
+                "рассказать, чем занимаетесь. Резюме и показ кода для участия не нужны."
             )
 
 
-# Pause handler
-@router.message(Interview.interviewing, F.text.in_({"стоп", "пауза", "позже", "потом"}))
-async def pause_interview(message: Message, state: FSMContext):
+@router.message(Interview.paused)
+async def paused_state(message: Message):
     await message.answer(
-        "Хорошо, сохраняю ваш прогресс. Напишите мне когда будете готовы продолжить.\n"
-        "Я напомню о себе через 24 часа"
+        "Профиль на паузе. Чтобы продолжить с сохранённого места, нажмите «Профиль для проектов».",
+        reply_markup=main_menu(),
     )
 
 
@@ -375,8 +484,7 @@ async def pause_interview(message: Message, state: FSMContext):
 @router.message(Interview.completed)
 async def completed_state(message: Message):
     await message.answer(
-        "Вы уже прошли собеседование. Наша команда скоро свяжется с вами!\n"
-        "Если хотите узнать о проектах - нажмите 'Наши проекты'",
+        "Ваш проектный профиль уже сохранён. Пока можно участвовать в обсуждениях "
+        "и встречах; если появится подходящая задача, команда напишет отдельно.",
         reply_markup=main_menu(),
     )
-
