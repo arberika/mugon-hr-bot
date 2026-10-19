@@ -26,6 +26,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def ensure_polling_allowed(bot):
+    """Refuse polling when a webhook exists; never mutate webhook state."""
+    webhook = await bot.get_webhook_info()
+    if webhook.url:
+        raise RuntimeError(
+            "Polling startup refused: an active Telegram webhook exists. "
+            "Review the current integration before an explicit mode change."
+        )
+
+
 async def main():
     bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
@@ -36,14 +46,13 @@ async def main():
     dp.message.middleware(ThrottlingMiddleware(rate_limit=1.0, burst=5))
     dp.message.middleware(VerificationMiddleware())
 
-    # Remove existing webhook (we use polling)
-    await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("MUGON HR Bot starting in polling mode...")
-
-    # Start background scheduler
-    asyncio.create_task(run_scheduler(bot, redis_url))
-
     try:
+        # Fail closed on active webhook or lookup failure. No updates are dropped.
+        await ensure_polling_allowed(bot)
+        logger.info("MUGON HR Bot starting in polling mode...")
+
+        # Start background work only after the read-only startup guard succeeds.
+        asyncio.create_task(run_scheduler(bot, redis_url))
         await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
     finally:
         await bot.session.close()
@@ -52,3 +61,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

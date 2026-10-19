@@ -101,8 +101,21 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(Interview.waiting_contact, F.contact)
 async def got_contact(message: Message, state: FSMContext, bot: Bot):
     contact = message.contact
-    phone   = contact.phone_number
-    user    = message.from_user
+    user = message.from_user
+    # A forwarded/shared third-party contact is not proof of ownership.
+    if (
+        contact is None
+        or user is None
+        or contact.user_id is None
+        or contact.user_id != user.id
+    ):
+        await message.answer(
+            "Поделитесь своим номером через кнопку ниже. "
+            "Чужой контакт нельзя использовать для подтверждения номера.",
+            reply_markup=share_contact_kb(),
+        )
+        return
+    phone = contact.phone_number
 
     await state.update_data(
         phone=phone,
@@ -366,3 +379,4 @@ async def completed_state(message: Message):
         "Если хотите узнать о проектах - нажмите 'Наши проекты'",
         reply_markup=main_menu(),
     )
+
