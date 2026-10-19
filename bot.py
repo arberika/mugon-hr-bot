@@ -9,11 +9,13 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from handlers import router
 from middleware import ThrottlingMiddleware, VerificationMiddleware
 from scheduler import run_scheduler
 
-load_dotenv()
+os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,25 +42,31 @@ async def main():
     bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     storage = RedisStorage.from_url(redis_url)
-    dp = Dispatcher(storage=storage)
+    dp = Dispatcher(storage=storage, events_isolation=storage.create_isolation(lock_kwargs={"timeout": 300}))
 
     dp.include_router(router)
     dp.message.middleware(ThrottlingMiddleware(rate_limit=1.0, burst=5))
     dp.message.middleware(VerificationMiddleware())
 
+    scheduler_task = None
     try:
         # Fail closed on active webhook or lookup failure. No updates are dropped.
         await ensure_polling_allowed(bot)
         logger.info("MUGON HR Bot starting in polling mode...")
 
         # Start background work only after the read-only startup guard succeeds.
-        asyncio.create_task(run_scheduler(bot, redis_url))
+        scheduler_task = asyncio.create_task(run_scheduler(bot, redis_url))
         await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
     finally:
-        await bot.session.close()
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            await asyncio.gather(scheduler_task, return_exceptions=True)
+        try:
+            await storage.close()
+        finally:
+            await bot.session.close()
         logger.info("MUGON HR Bot stopped")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault('OPENAI_API_KEY', 'offline-placeholder')
 from aiogram import Bot
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import Update
 import httpx
 import app
@@ -15,6 +15,8 @@ class RuntimeContactTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.bot = Bot(token='123456:synthetic-placeholder')
         self.storage = MemoryStorage()
+        self.old_isolation = app.dispatcher.fsm.events_isolation
+        app.dispatcher.fsm.events_isolation = SimpleEventIsolation()
         self.old_storage = app.dispatcher.fsm.storage
         app.dispatcher.fsm.storage = self.storage
         self.state = app.dispatcher.fsm.get_context(bot=self.bot, chat_id=42, user_id=42)
@@ -35,6 +37,8 @@ class RuntimeContactTests(unittest.IsolatedAsyncioTestCase):
         self.transport.stop()
         self.crm_patch.stop()
         self.gpt_patch.stop()
+        await app.dispatcher.fsm.events_isolation.close()
+        app.dispatcher.fsm.events_isolation = self.old_isolation
         app.dispatcher.fsm.storage = self.old_storage
         await self.storage.close()
         await self.bot.session.close()
